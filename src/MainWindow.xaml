@@ -1,0 +1,139 @@
+<Window x:Class="TerminalCustom.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
+        Title="Terminal Custom"
+        Icon="Assets/terminal.ico"
+        Width="720" Height="430" MinWidth="600" MinHeight="360"
+        WindowStartupLocation="CenterScreen"
+        WindowStyle="None" ResizeMode="CanResize"
+        AllowsTransparency="True" Background="Transparent"
+        UseLayoutRounding="True" SnapsToDevicePixels="True"
+        StateChanged="Window_StateChanged">
+
+    <shell:WindowChrome.WindowChrome>
+        <shell:WindowChrome CaptionHeight="0" ResizeBorderThickness="8"
+                            CornerRadius="28" GlassFrameThickness="0"
+                            UseAeroCaptionButtons="False" />
+    </shell:WindowChrome.WindowChrome>
+
+    <Window.Resources>
+        <Style x:Key="CaptionButton" TargetType="Button">
+            <Setter Property="Width" Value="40" />
+            <Setter Property="Height" Value="34" />
+            <Setter Property="Margin" Value="2,0" />
+            <Setter Property="Foreground" Value="#F4F7FB" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="FontFamily" Value="Segoe UI" />
+            <Setter Property="FontSize" Value="17" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="ButtonSurface" Background="{TemplateBinding Background}" CornerRadius="8">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="ButtonSurface" Property="Background" Value="#24FFFFFF" />
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="ButtonSurface" Property="Background" Value="#38FFFFFF" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="CloseButton" TargetType="Button" BasedOn="{StaticResource CaptionButton}">
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="ButtonSurface" Background="{TemplateBinding Background}" CornerRadius="8">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="ButtonSurface" Property="Background" Value="#E81123" />
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="ButtonSurface" Property="Background" Value="#B50D1D" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+    </Window.Resources>
+
+    <Border x:Name="WindowSurface" BorderBrush="#758BAA"
+            BorderThickness="1" CornerRadius="28">
+        <Border.Background>
+            <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
+                <GradientStop Color="#B512243B" Offset="0" />
+                <GradientStop Color="#A90A1728" Offset="0.48" />
+                <GradientStop Color="#BC050B15" Offset="1" />
+            </LinearGradientBrush>
+        </Border.Background>
+        <Grid ClipToBounds="True">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="44" />
+                <RowDefinition Height="*" />
+            </Grid.RowDefinitions>
+
+            <Grid Grid.Row="0" Background="Transparent" MouseLeftButtonDown="TitleBar_MouseLeftButtonDown">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+
+                <StackPanel Grid.Column="1" Orientation="Horizontal" Margin="0,0,16,0"
+                            VerticalAlignment="Center"
+                            shell:WindowChrome.IsHitTestVisibleInChrome="True">
+                    <Button Style="{StaticResource CaptionButton}" Click="Minimize_Click" ToolTip="Minimizar">
+                        <Border Width="11" Height="1.2" Background="#F4F7FB" />
+                    </Button>
+                    <Button Style="{StaticResource CaptionButton}" Click="Maximize_Click" ToolTip="Maximizar">
+                        <Border Width="11" Height="11" BorderBrush="#F4F7FB" BorderThickness="1.2" />
+                    </Button>
+                    <Button Style="{StaticResource CloseButton}" Click="Close_Click" ToolTip="Fechar">
+                        <Grid Width="12" Height="12">
+                            <Border Width="15" Height="1.2" Background="#F4F7FB"
+                                    HorizontalAlignment="Center" VerticalAlignment="Center"
+                                    RenderTransformOrigin="0.5,0.5">
+                                <Border.RenderTransform><RotateTransform Angle="45" /></Border.RenderTransform>
+                            </Border>
+                            <Border Width="15" Height="1.2" Background="#F4F7FB"
+                                    HorizontalAlignment="Center" VerticalAlignment="Center"
+                                    RenderTransformOrigin="0.5,0.5">
+                                <Border.RenderTransform><RotateTransform Angle="-45" /></Border.RenderTransform>
+                            </Border>
+                        </Grid>
+                    </Button>
+                </StackPanel>
+            </Grid>
+
+            <RichTextBox x:Name="TerminalView" Grid.Row="1" Margin="30,0,22,22"
+                         IsReadOnly="False" AcceptsReturn="True" AcceptsTab="True"
+                         Background="Transparent" BorderThickness="0" Foreground="#22D3EE"
+                         CaretBrush="Transparent" FontFamily="Cascadia Mono, Consolas" FontSize="15"
+                         Padding="0" IsUndoEnabled="False" SpellCheck.IsEnabled="False"
+                         ContextMenuService.IsEnabled="False"
+                         VerticalScrollBarVisibility="Hidden" HorizontalScrollBarVisibility="Hidden"
+                         SelectionBrush="#526D91" SelectionOpacity="0.65"
+                         PreviewTextInput="TerminalView_PreviewTextInput"
+                         PreviewKeyDown="TerminalView_PreviewKeyDown"
+                         PreviewMouseRightButtonDown="TerminalView_PreviewMouseRightButtonDown"
+                         PreviewMouseRightButtonUp="TerminalView_PreviewMouseRightButtonUp"
+                         ContextMenuOpening="TerminalView_ContextMenuOpening"
+                         SizeChanged="TerminalView_SizeChanged">
+                <FlowDocument PagePadding="0" PageWidth="10000">
+                    <Paragraph Margin="0" />
+                </FlowDocument>
+            </RichTextBox>
+        </Grid>
+    </Border>
+</Window>
