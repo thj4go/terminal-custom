@@ -1,6 +1,6 @@
 app/
-src/bin/
-src/obj/
+**/bin/
+**/obj/
 .vs/
 .idea/
 *.user

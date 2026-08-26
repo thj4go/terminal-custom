@@ -18,6 +18,7 @@ internal sealed class ConPtySession : IDisposable
     private FileStream? _input;
     private FileStream? _output;
     private CancellationTokenSource? _cancel;
+    private Task? _readTask;
     private readonly SemaphoreSlim _writeLock = new(1, 1);
     private bool _disposed;
 
@@ -67,7 +68,7 @@ internal sealed class ConPtySession : IDisposable
             _output = new FileStream(new SafeFileHandle(outputRead, true), FileAccess.Read, 4096, false);
             outputRead = IntPtr.Zero;
             _cancel = new CancellationTokenSource();
-            _ = ReadLoopAsync(_cancel.Token);
+            _readTask = ReadLoopAsync(_cancel.Token);
             _ = WaitLoopAsync();
         }
         catch
@@ -128,6 +129,8 @@ internal sealed class ConPtySession : IDisposable
     {
         if (_processHandle == IntPtr.Zero) return;
         await Task.Run(() => WaitForSingleObject(_processHandle, 0xFFFFFFFF));
+        if (_readTask is not null)
+            try { await _readTask; } catch { }
         Exited?.Invoke();
     }
 

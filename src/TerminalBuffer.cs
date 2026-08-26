@@ -211,16 +211,6 @@ internal sealed class TerminalBuffer
         ResetScreen();
     }
 
-    public bool ContainsOnlyPowerShellPrompt()
-    {
-        string[] visibleLines = ToString()
-            .Replace("▌", "", StringComparison.Ordinal)
-            .Split(["\r\n", "\n"], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        return visibleLines.Length == 1 &&
-               visibleLines[0].StartsWith("PS ", StringComparison.OrdinalIgnoreCase) &&
-               visibleLines[0].EndsWith('>');
-    }
-
     private void ResetScreen()
     {
         _screen.Clear();

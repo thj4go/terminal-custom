@@ -1,50 +1,46 @@
-using System.Runtime.InteropServices;
-using System.Text;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Documents;
 using System.Windows.Input;
 using System.Windows.Media;
+using TerminalCustom.Shell;
 
 namespace TerminalCustom;
 
 public partial class MainWindow : Window
 {
-    private ConPtySession? _session;
-    private AiBridgeServer? _aiBridge;
     private TerminalBuffer _buffer = new();
+    private readonly InputBuffer _input = new();
+    private AiBridgeServer? _ai;
+    private ShellEngine? _shell;
     private bool _renderQueued;
-    private readonly StringBuilder _currentInput = new();
-    private int _inputCursor;
-    private bool _inputTrackingReliable = true;
-    private int _resizeVersion;
-    private bool _repositionAfterResize;
     private short _columns = 100;
     private short _rows = 30;
 
     public MainWindow()
     {
         InitializeComponent();
-        Loaded += (_, _) => StartSession();
-        Closed += (_, _) => StopSession();
+        Loaded += (_, _) => StartShell();
+        Closed += (_, _) => StopShell();
     }
 
-    private void StartSession()
+    private void StartShell()
     {
-        StopSession();
+        StopShell();
         _buffer = new TerminalBuffer();
-        ResetInputTracking();
-        SetTerminalPlainText("");
+        _input.Clear();
+        SetTerminalPlainText(string.Empty);
         CalculateSize();
         _buffer.Resize(_columns, _rows);
         try
         {
-            _aiBridge = new AiBridgeServer(this);
-            _session = new ConPtySession();
-            _session.OutputReceived += OnOutput;
-            _session.Exited += OnExited;
-            _session.Start(BuildPowerShellCommand(_aiBridge.PipeName),
-                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), _columns, _rows);
+            _ai = new AiBridgeServer(this);
+            _shell = new ShellEngine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), _ai);
+            _shell.OutputReceived += OnOutput;
+            _shell.ClearRequested += OnClearRequested;
+            _shell.ExitRequested += OnExitRequested;
+            _shell.InteractiveEnded += OnInteractiveEnded;
+            _shell.Start();
             TerminalView.Focus();
         }
         catch (Exception ex)
@@ -54,15 +50,35 @@ public partial class MainWindow : Window
         }
     }
 
-    private void OnOutput(string text)
+    private void StopShell()
     {
-        Dispatcher.InvokeAsync(() =>
+        if (_shell is not null)
         {
-            _buffer.Feed(text);
-            if (_renderQueued) return;
-            _renderQueued = true;
-            Dispatcher.InvokeAsync(Render, System.Windows.Threading.DispatcherPriority.Background);
-        });
+            _shell.OutputReceived -= OnOutput;
+            _shell.ClearRequested -= OnClearRequested;
+            _shell.ExitRequested -= OnExitRequested;
+            _shell.InteractiveEnded -= OnInteractiveEnded;
+            _shell.Dispose();
+            _shell = null;
+        }
+        _ai?.Dispose();
+        _ai = null;
+    }
+
+    private void OnOutput(string text) => Dispatcher.InvokeAsync(() =>
+    {
+        _buffer.Feed(text);
+        QueueRender();
+    });
+    private void OnClearRequested() => Dispatcher.InvokeAsync(() => ClearLocally(false));
+    private void OnExitRequested() => Dispatcher.InvokeAsync(Close);
+    private void OnInteractiveEnded() => Dispatcher.InvokeAsync(_input.Clear);
+
+    private void QueueRender()
+    {
+        if (_renderQueued) return;
+        _renderQueued = true;
+        Dispatcher.InvokeAsync(Render, System.Windows.Threading.DispatcherPriority.Background);
     }
 
     private void Render()
@@ -70,15 +86,12 @@ public partial class MainWindow : Window
         _renderQueued = false;
         var document = new FlowDocument
         {
-            PagePadding = new Thickness(0),
-            PageWidth = 10000,
-            FontFamily = TerminalView.FontFamily,
-            FontSize = TerminalView.FontSize
+            PagePadding = new Thickness(0), PageWidth = 10000,
+            FontFamily = TerminalView.FontFamily, FontSize = TerminalView.FontSize
         };
         var paragraph = new Paragraph
         {
-            Margin = new Thickness(0),
-            LineHeight = TerminalView.FontSize * 1.35,
+            Margin = new Thickness(0), LineHeight = TerminalView.FontSize * 1.35,
             LineStackingStrategy = LineStackingStrategy.BlockLineHeight
         };
         foreach (TerminalSegment segment in _buffer.GetStyledSegments())
@@ -97,293 +110,175 @@ public partial class MainWindow : Window
         TerminalView.Document = document;
     }
 
-    private void OnExited() => Dispatcher.InvokeAsync(() =>
+    private void RenderInputLine()
     {
-        _buffer.Feed("\r\n[Sessão encerrada]");
-        Render();
-    });
-
-    private void StopSession()
-    {
-        if (_session is not null)
-        {
-            _session.OutputReceived -= OnOutput;
-            _session.Exited -= OnExited;
-            _session.Dispose();
-            _session = null;
-        }
-        _aiBridge?.Dispose();
-        _aiBridge = null;
-    }
-
-    private static string BuildPowerShellCommand(string pipeName)
-    {
-        string startup = $$"""
-            try { Set-PSReadLineOption -PredictionSource None -ErrorAction Stop } catch {}
-            $global:TerminalAiPipe = '{{pipeName}}'
-
-            function global:Invoke-TerminalAiBridge {
-                param([hashtable]$Request)
-                $pipe = $null
-                $reader = $null
-                $writer = $null
-                try {
-                    $pipe = [System.IO.Pipes.NamedPipeClientStream]::new('.', $global:TerminalAiPipe, [System.IO.Pipes.PipeDirection]::InOut)
-                    $pipe.Connect(5000)
-                    $utf8 = [System.Text.UTF8Encoding]::new($false)
-                    $reader = [System.IO.StreamReader]::new($pipe, $utf8, $false, 4096, $true)
-                    $writer = [System.IO.StreamWriter]::new($pipe, $utf8, 4096, $true)
-                    $writer.AutoFlush = $true
-                    $writer.WriteLine(($Request | ConvertTo-Json -Compress))
-                    $line = $reader.ReadLine()
-                    if ([string]::IsNullOrWhiteSpace($line)) { throw 'A ponte da IA não respondeu.' }
-                    return ($line | ConvertFrom-Json)
-                }
-                catch {
-                    return [pscustomobject]@{ ok = $false; message = "Falha na IA: $($_.Exception.Message)" }
-                }
-                finally {
-                    if ($writer) { $writer.Dispose() }
-                    if ($reader) { $reader.Dispose() }
-                    if ($pipe) { $pipe.Dispose() }
-                }
-            }
-
-            function global:ai-key {
-                param([switch]$remover)
-                $type = if ($remover) { 'clear-key' } else { 'set-key' }
-                $result = Invoke-TerminalAiBridge @{ type = $type }
-                $color = if ($result.ok) { 'Cyan' } else { 'Yellow' }
-                Write-Host $result.message -ForegroundColor $color
-            }
-
-            function global:ai-status {
-                $result = Invoke-TerminalAiBridge @{ type = 'status' }
-                $color = if ($result.ok) { 'Cyan' } else { 'Yellow' }
-                Write-Host $result.message -ForegroundColor $color
-            }
-
-            function global:ai-prompt {
-                param([switch]$remover)
-                $type = if ($remover) { 'clear-prompt' } else { 'set-prompt' }
-                $result = Invoke-TerminalAiBridge @{ type = $type }
-                $color = if ($result.ok) { 'Cyan' } else { 'Yellow' }
-                Write-Host $result.message -ForegroundColor $color
-            }
-
-            $ExecutionContext.InvokeCommand.CommandNotFoundAction = {
-                param($commandName, $eventArgs)
-                $originalName = if ($commandName.StartsWith('get-', [System.StringComparison]::OrdinalIgnoreCase)) {
-                    $commandName.Substring(4)
-                } else { $commandName }
-                $capturedName = $originalName
-                $eventArgs.CommandScriptBlock = {
-                    $words = @($capturedName) + @($args | ForEach-Object { [string]$_ })
-                    $question = ($words -join ' ').Trim()
-                    $result = Invoke-TerminalAiBridge @{ type = 'chat'; prompt = $question }
-                    if ($result.ok) {
-                        $white = [char]0xE000
-                        $reset = [char]0xE001
-                        Write-Host "$white$($result.message)$reset"
-                    } else {
-                        Write-Host $result.message -ForegroundColor Yellow
-                    }
-                }.GetNewClosure()
-            }
-            """;
-
-        string encoded = Convert.ToBase64String(Encoding.Unicode.GetBytes(startup));
-        return $"powershell.exe -NoLogo -NoProfile -NoExit -EncodedCommand {encoded}";
+        if (_shell is null || _shell.IsInteractive) return;
+        int tail = _input.Text.Length - _input.Cursor;
+        _buffer.Feed("\r\x1b[2K" + _shell.Prompt + _input.Text + (tail > 0 ? $"\x1b[{tail}D" : string.Empty));
+        QueueRender();
     }
 
     private async void TerminalView_PreviewTextInput(object sender, TextCompositionEventArgs e)
     {
         e.Handled = true;
-        if (_inputTrackingReliable && e.Text.All(character => !char.IsControl(character)))
-            InsertTrackedText(e.Text);
-        if (_session is not null) await _session.WriteAsync(e.Text);
+        if (string.IsNullOrEmpty(e.Text) || e.Text.Any(char.IsControl)) return;
+        if (_shell?.IsInteractive == true) await _shell.WriteInteractiveAsync(e.Text);
+        else if (_shell is { IsBusy: false })
+        {
+            _input.Insert(e.Text);
+            RenderInputLine();
+        }
     }
 
     private async void TerminalView_PreviewKeyDown(object sender, KeyEventArgs e)
     {
-        string? sequence = null;
-        bool ctrl = Keyboard.Modifiers.HasFlag(ModifierKeys.Control);
-        bool shift = Keyboard.Modifiers.HasFlag(ModifierKeys.Shift);
+        if (_shell is null) return;
+        ModifierKeys modifiers = Keyboard.Modifiers;
+        bool ctrl = modifiers.HasFlag(ModifierKeys.Control);
+        bool alt = modifiers.HasFlag(ModifierKeys.Alt);
+        bool shift = modifiers.HasFlag(ModifierKeys.Shift);
+        if (ctrl && alt) return; // AltGr: o caractere real chega em PreviewTextInput.
 
-        if (e.Key == Key.Enter)
+        if (ctrl && shift && e.Key == Key.C)
         {
-            string command = _currentInput.ToString().Trim();
-            if (_inputTrackingReliable && (command.Equals("clear", StringComparison.OrdinalIgnoreCase) ||
-                                           command.Equals("cls", StringComparison.OrdinalIgnoreCase) ||
-                                           command.Equals("clear-host", StringComparison.OrdinalIgnoreCase)))
-            {
-                e.Handled = true;
-                ResetInputTracking();
-                await ClearTerminalAsync();
-                return;
-            }
-            ResetInputTracking();
+            e.Handled = true;
+            CopySelection();
+            return;
         }
-
         if (ctrl && shift && e.Key == Key.V)
         {
-            if (Clipboard.ContainsText()) sequence = Clipboard.GetText().Replace("\r\n", "\r").Replace("\n", "\r");
-        }
-        else if (ctrl && shift && e.Key == Key.C)
-        {
-            CopySelection();
             e.Handled = true;
+            if (Clipboard.ContainsText()) await PasteAsync(Clipboard.GetText());
             return;
         }
-        else if (ctrl && e.Key == Key.L)
+        if (ctrl && e.Key == Key.L)
         {
             e.Handled = true;
-            ResetInputTracking();
-            await ClearTerminalAsync();
+            ClearLocally(!_shell.IsInteractive && !_shell.IsBusy);
             return;
         }
-        else if (ctrl && e.Key is >= Key.A and <= Key.Z)
-            sequence = ((char)(e.Key - Key.A + 1)).ToString();
-        else sequence = e.Key switch
-        {
-            Key.Enter => "\r", Key.Back => "\x7f", Key.Tab => "\t", Key.Escape => "\x1b",
-            Key.Up => "\x1b[A", Key.Down => "\x1b[B", Key.Right => "\x1b[C", Key.Left => "\x1b[D",
-            Key.Home => "\x1b[H", Key.End => "\x1b[F", Key.Delete => "\x1b[3~",
-            Key.PageUp => "\x1b[5~", Key.PageDown => "\x1b[6~", _ => null
-        };
-        if (sequence is null && !ctrl && !Keyboard.Modifiers.HasFlag(ModifierKeys.Alt))
-            sequence = TranslateKey(e.Key);
-        if (sequence is not null)
+        if (ctrl && e.Key == Key.C)
         {
             e.Handled = true;
-            TrackInput(e.Key, sequence, ctrl);
-            if (_session is not null) await _session.WriteAsync(sequence);
-        }
-    }
-
-    private void TrackInput(Key key, string sequence, bool ctrl)
-    {
-        if (key == Key.Enter) return;
-        if (key == Key.Back)
-        {
-            if (_inputTrackingReliable && _inputCursor > 0)
+            if (_shell.IsInteractive || _shell.IsBusy) await _shell.CancelAsync();
+            else
             {
-                _currentInput.Remove(_inputCursor - 1, 1);
-                _inputCursor--;
+                _buffer.Feed("^C\r\n" + _shell.Prompt);
+                _input.Clear();
+                QueueRender();
             }
             return;
         }
-        if (key == Key.Delete)
+
+        if (e.Key == Key.Space)
         {
-            if (_inputTrackingReliable && _inputCursor < _currentInput.Length)
-                _currentInput.Remove(_inputCursor, 1);
+            e.Handled = true;
+            if (_shell.IsInteractive) await _shell.WriteInteractiveAsync(" ");
+            else if (!_shell.IsBusy)
+            {
+                _input.Insert(" ");
+                RenderInputLine();
+            }
             return;
         }
-        if (ctrl && key == Key.C)
+
+        if (_shell.IsInteractive)
         {
-            ResetInputTracking();
+            string? sequence = e.Key switch
+            {
+                Key.Enter => "\r", Key.Back => "\x7f", Key.Tab => "\t", Key.Escape => "\x1b",
+                Key.Up => "\x1b[A", Key.Down => "\x1b[B", Key.Right => "\x1b[C", Key.Left => "\x1b[D",
+                Key.Home => "\x1b[H", Key.End => "\x1b[F", Key.Delete => "\x1b[3~",
+                Key.PageUp => "\x1b[5~", Key.PageDown => "\x1b[6~", _ => null
+            };
+            if (sequence is not null)
+            {
+                e.Handled = true;
+                await _shell.WriteInteractiveAsync(sequence);
+            }
             return;
         }
-        if (sequence.Any(character => character is '\r' or '\n'))
+        if (_shell.IsBusy) return;
+
+        bool changed = true;
+        switch (e.Key)
         {
-            _currentInput.Clear();
-            _inputCursor = 0;
-            _inputTrackingReliable = false;
-            return;
+            case Key.Enter:
+                e.Handled = true;
+                string command = _input.Take();
+                _buffer.Feed("\r\x1b[2K" + _shell.Prompt + command + "\r\n");
+                QueueRender();
+                await _shell.SubmitAsync(command, _columns, _rows);
+                return;
+            case Key.Back: _input.Backspace(); break;
+            case Key.Delete: _input.Delete(); break;
+            case Key.Left: _input.MoveLeft(); break;
+            case Key.Right: _input.MoveRight(); break;
+            case Key.Home: _input.MoveHome(); break;
+            case Key.End: _input.MoveEnd(); break;
+            case Key.Up: _input.Replace(_shell.History.Previous(_input.Text)); break;
+            case Key.Down: _input.Replace(_shell.History.Next()); break;
+            default: changed = false; break;
         }
-        if (sequence.All(character => !char.IsControl(character)))
+        if (changed)
         {
-            if (_inputTrackingReliable) InsertTrackedText(sequence);
-            return;
+            e.Handled = true;
+            RenderInputLine();
         }
-        if (_inputTrackingReliable && !ctrl)
-        {
-            if (key == Key.Left) { _inputCursor = Math.Max(0, _inputCursor - 1); return; }
-            if (key == Key.Right) { _inputCursor = Math.Min(_currentInput.Length, _inputCursor + 1); return; }
-            if (key == Key.Home) { _inputCursor = 0; return; }
-            if (key == Key.End) { _inputCursor = _currentInput.Length; return; }
-        }
-        if (key is Key.Up or Key.Down or Key.Tab || ctrl)
-            _inputTrackingReliable = false;
     }
 
-    private void InsertTrackedText(string text)
+    private async Task PasteAsync(string text)
     {
-        _currentInput.Insert(_inputCursor, text);
-        _inputCursor += text.Length;
-    }
-
-    private void ResetInputTracking()
-    {
-        _currentInput.Clear();
-        _inputCursor = 0;
-        _inputTrackingReliable = true;
-    }
-
-    private async Task ClearTerminalAsync()
-    {
-        if (_session is null)
+        if (_shell is null) return;
+        text = text.Replace("\r\n", "\n").Replace('\r', '\n');
+        if (_shell.IsInteractive)
         {
-            _buffer.Clear();
-            Render();
+            await _shell.WriteInteractiveAsync(text.Replace("\n", "\r"));
             return;
         }
+        if (_shell.IsBusy) return;
+        string[] lines = text.Split('\n');
+        for (int index = 0; index < lines.Length; index++)
+        {
+            _input.Insert(lines[index]);
+            if (index == lines.Length - 1) break;
+            string command = _input.Take();
+            _buffer.Feed("\r\x1b[2K" + _shell.Prompt + command + "\r\n");
+            QueueRender();
+            await _shell.SubmitAsync(command, _columns, _rows);
+            if (_shell.IsInteractive || _shell.IsBusy) break;
+        }
+        RenderInputLine();
+    }
 
-        // Cancela a linha ainda mantida pelo PSReadLine e limpa também a tela
-        // real do ConPTY. Assim o cursor interno e a tela desenhada permanecem
-        // sincronizados mesmo após várias limpezas.
-        await _session.WriteAsync("\x03");
-        await Task.Delay(80);
-        await _session.WriteAsync("$e=[char]27; Write-Host -NoNewline \"$e[2J$e[3J$e[H\"\r");
+    private void ClearLocally(bool redrawInput)
+    {
+        _buffer.Clear();
+        if (redrawInput && _shell is not null)
+        {
+            int tail = _input.Text.Length - _input.Cursor;
+            _buffer.Feed(_shell.Prompt + _input.Text + (tail > 0 ? $"\x1b[{tail}D" : string.Empty));
+        }
+        QueueRender();
     }
 
     private async void TerminalView_PreviewMouseRightButtonDown(object sender, MouseButtonEventArgs e)
     {
         e.Handled = true;
-        if (!string.IsNullOrEmpty(TerminalView.Selection.Text))
-        {
-            Clipboard.SetText(TerminalView.Selection.Text);
-        }
-        else if (_session is not null && Clipboard.ContainsText())
-        {
-            string text = Clipboard.GetText().Replace("\r\n", "\r").Replace("\n", "\r");
-            if (_inputTrackingReliable && !text.Contains('\r')) InsertTrackedText(text);
-            else _inputTrackingReliable = false;
-            await _session.WriteAsync(text);
-        }
+        if (!string.IsNullOrEmpty(TerminalView.Selection.Text)) Clipboard.SetText(TerminalView.Selection.Text);
+        else if (Clipboard.ContainsText()) await PasteAsync(Clipboard.GetText());
         TerminalView.Focus();
     }
 
     private void TerminalView_ContextMenuOpening(object sender, ContextMenuEventArgs e) => e.Handled = true;
-
     private void TerminalView_PreviewMouseRightButtonUp(object sender, MouseButtonEventArgs e) => e.Handled = true;
 
-    private static string? TranslateKey(Key key)
+    private void TerminalView_SizeChanged(object sender, SizeChangedEventArgs e)
     {
-        int virtualKey = KeyInterop.VirtualKeyFromKey(key);
-        if (virtualKey <= 0) return null;
-        var keyboardState = new byte[256];
-        if (!GetKeyboardState(keyboardState)) return null;
-        uint scanCode = MapVirtualKey((uint)virtualKey, 0);
-        var text = new StringBuilder(8);
-        int length = ToUnicodeEx((uint)virtualKey, scanCode, keyboardState, text,
-            text.Capacity, 0, GetKeyboardLayout(0));
-        return length > 0 ? text.ToString(0, length) : null;
-    }
-
-    private async void TerminalView_SizeChanged(object sender, SizeChangedEventArgs e)
-    {
-        if (_buffer.ContainsOnlyPowerShellPrompt()) _repositionAfterResize = true;
         CalculateSize();
         _buffer.Resize(_columns, _rows);
-        _session?.Resize(_columns, _rows);
-        int version = ++_resizeVersion;
-        await Task.Delay(400);
-        if (version == _resizeVersion && _repositionAfterResize && _session is not null)
-        {
-            _repositionAfterResize = false;
-            await ClearTerminalAsync();
-        }
+        _shell?.Resize(_columns, _rows);
+        QueueRender();
     }
 
     private void CalculateSize()
@@ -398,7 +293,6 @@ public partial class MainWindow : Window
         if (e.ChangedButton != MouseButton.Left) return;
         if (e.ClickCount == 2) ToggleMaximize(); else DragMove();
     }
-
     private void Minimize_Click(object sender, RoutedEventArgs e) => WindowState = WindowState.Minimized;
     private void Maximize_Click(object sender, RoutedEventArgs e) => ToggleMaximize();
     private void Close_Click(object sender, RoutedEventArgs e) => Close();
@@ -408,36 +302,22 @@ public partial class MainWindow : Window
         WindowSurface.CornerRadius = WindowState == WindowState.Maximized ? new CornerRadius(0) : new CornerRadius(28);
         WindowSurface.BorderThickness = WindowState == WindowState.Maximized ? new Thickness(0) : new Thickness(1);
     }
-
-    private void CopySelection() { if (!string.IsNullOrEmpty(TerminalView.Selection.Text)) Clipboard.SetText(TerminalView.Selection.Text); }
+    private void CopySelection()
+    {
+        if (!string.IsNullOrEmpty(TerminalView.Selection.Text)) Clipboard.SetText(TerminalView.Selection.Text);
+    }
 
     private static SolidColorBrush TerminalBrush(TerminalColor color) => color switch
     {
-        TerminalColor.Black => Brush("#0C0C0C"),
-        TerminalColor.Red => Brush("#C50F1F"),
-        TerminalColor.Green => Brush("#13A10E"),
-        TerminalColor.Yellow => Brush("#FACC15"),
-        TerminalColor.Blue => Brush("#3B82F6"),
-        TerminalColor.Magenta => Brush("#C586C0"),
-        TerminalColor.Cyan => Brush("#22D3EE"),
-        TerminalColor.White => Brush("#F8FAFC"),
-        TerminalColor.BrightBlack => Brush("#767676"),
-        TerminalColor.BrightRed => Brush("#F14C4C"),
-        TerminalColor.BrightGreen => Brush("#23D18B"),
-        TerminalColor.BrightYellow => Brush("#FDE047"),
-        TerminalColor.BrightBlue => Brush("#3B8EEA"),
-        TerminalColor.BrightMagenta => Brush("#D670D6"),
-        TerminalColor.BrightCyan => Brush("#29B8DB"),
-        TerminalColor.BrightWhite => Brush("#FFFFFF"),
+        TerminalColor.Black => Brush("#0C0C0C"), TerminalColor.Red => Brush("#C50F1F"),
+        TerminalColor.Green => Brush("#13A10E"), TerminalColor.Yellow => Brush("#FACC15"),
+        TerminalColor.Blue => Brush("#3B82F6"), TerminalColor.Magenta => Brush("#C586C0"),
+        TerminalColor.Cyan => Brush("#22D3EE"), TerminalColor.White => Brush("#F8FAFC"),
+        TerminalColor.BrightBlack => Brush("#767676"), TerminalColor.BrightRed => Brush("#F14C4C"),
+        TerminalColor.BrightGreen => Brush("#23D18B"), TerminalColor.BrightYellow => Brush("#FDE047"),
+        TerminalColor.BrightBlue => Brush("#3B8EEA"), TerminalColor.BrightMagenta => Brush("#D670D6"),
+        TerminalColor.BrightCyan => Brush("#29B8DB"), TerminalColor.BrightWhite => Brush("#FFFFFF"),
         _ => Brush("#22D3EE")
     };
-
     private static SolidColorBrush Brush(string hex) => (SolidColorBrush)new BrushConverter().ConvertFrom(hex)!;
-
-    [DllImport("user32.dll")] private static extern bool GetKeyboardState(byte[] keyboardState);
-    [DllImport("user32.dll")] private static extern uint MapVirtualKey(uint code, uint mapType);
-    [DllImport("user32.dll")] private static extern IntPtr GetKeyboardLayout(uint threadId);
-    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
-    private static extern int ToUnicodeEx(uint virtualKey, uint scanCode, byte[] keyboardState,
-        StringBuilder buffer, int bufferSize, uint flags, IntPtr keyboardLayout);
 }

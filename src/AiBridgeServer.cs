@@ -1,5 +1,3 @@
-using System.IO;
-using System.IO.Pipes;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text;
@@ -16,134 +14,70 @@ internal sealed class AiBridgeServer : IDisposable
     private const string Endpoint = "https://openrouter.ai/api/v1/chat/completions";
     private const string DefaultSystemPrompt = "Você é a IA integrada a um terminal Windows. Responda em português do Brasil, de forma clara e direta. Não finja que executou comandos. Quando sugerir um comando, explique brevemente e formate-o com clareza.";
     private readonly Window _owner;
-    private readonly CancellationTokenSource _cancel = new();
     private readonly HttpClient _http = new() { Timeout = TimeSpan.FromMinutes(3) };
     private readonly List<ChatMessage> _history = [];
-    private readonly Task _serverTask;
     private string? _apiKey;
     private string _systemPrompt = DefaultSystemPrompt;
     private bool _customSystemPrompt;
     private bool _disposed;
 
-    public string PipeName { get; } = $"terminal-custom-ai-{Guid.NewGuid():N}";
-
     public AiBridgeServer(Window owner)
     {
         _owner = owner;
-        _serverTask = RunAsync(_cancel.Token);
     }
 
-    private async Task RunAsync(CancellationToken token)
-    {
-        while (!token.IsCancellationRequested)
-        {
-            try
-            {
-                await using var pipe = new NamedPipeServerStream(
-                    PipeName, PipeDirection.InOut, 1, PipeTransmissionMode.Byte,
-                    PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
-                await pipe.WaitForConnectionAsync(token);
-
-                using var reader = new StreamReader(pipe, Encoding.UTF8, false, 4096, true);
-                await using var writer = new StreamWriter(pipe, new UTF8Encoding(false), 4096, true)
-                {
-                    AutoFlush = true
-                };
-
-                string? line = await reader.ReadLineAsync(token);
-                BridgeResponse response = line is null
-                    ? BridgeResponse.Error("Pedido vazio.")
-                    : await HandleAsync(line, token);
-                await writer.WriteLineAsync(JsonSerializer.Serialize(response));
-            }
-            catch (OperationCanceledException) when (token.IsCancellationRequested)
-            {
-                break;
-            }
-            catch
-            {
-                if (token.IsCancellationRequested) break;
-            }
-        }
-    }
-
-    private async Task<BridgeResponse> HandleAsync(string json, CancellationToken token)
-    {
-        BridgeRequest? request;
-        try
-        {
-            request = JsonSerializer.Deserialize<BridgeRequest>(json,
-                new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
-        }
-        catch (JsonException)
-        {
-            return BridgeResponse.Error("Pedido inválido.");
-        }
-
-        return request?.Type?.ToLowerInvariant() switch
-        {
-            "set-key" => await AskForKeyAsync(),
-            "clear-key" => ClearKey(),
-            "set-prompt" => await AskForSystemPromptAsync(),
-            "clear-prompt" => ClearSystemPrompt(),
-            "status" => Status(),
-            "chat" => await ChatAsync(request.Prompt, token),
-            _ => BridgeResponse.Error("Ação de IA desconhecida.")
-        };
-    }
-
-    private async Task<BridgeResponse> AskForKeyAsync()
+    public async Task<AiResult> ConfigureKeyAsync()
     {
         string? key = await _owner.Dispatcher.InvokeAsync(ShowKeyDialog);
         if (string.IsNullOrWhiteSpace(key))
-            return BridgeResponse.Error("Configuração cancelada. A chave não foi alterada.");
+            return AiResult.Error("Configuração cancelada. A chave não foi alterada.");
 
         _apiKey = key.Trim();
         _history.Clear();
-        return BridgeResponse.Success("Chave da OpenRouter configurada somente nesta sessão.");
+        return AiResult.Success("Chave da OpenRouter configurada somente nesta sessão.");
     }
 
-    private BridgeResponse ClearKey()
+    public AiResult ClearKey()
     {
         _apiKey = null;
         _history.Clear();
-        return BridgeResponse.Success("Chave removida da memória.");
+        return AiResult.Success("Chave removida da memória.");
     }
 
-    private async Task<BridgeResponse> AskForSystemPromptAsync()
+    public async Task<AiResult> ConfigureSystemPromptAsync()
     {
         string? prompt = await _owner.Dispatcher.InvokeAsync(() => ShowSystemPromptDialog(_systemPrompt));
         if (string.IsNullOrWhiteSpace(prompt))
-            return BridgeResponse.Error("Alteração cancelada. A personalidade não foi modificada.");
+            return AiResult.Error("Alteração cancelada. A personalidade não foi modificada.");
 
         _systemPrompt = prompt.Trim();
         _customSystemPrompt = true;
         _history.Clear();
-        return BridgeResponse.Success("Personalidade da IA alterada somente nesta sessão.");
+        return AiResult.Success("Personalidade da IA alterada somente nesta sessão.");
     }
 
-    private BridgeResponse ClearSystemPrompt()
+    public AiResult ClearSystemPrompt()
     {
         _systemPrompt = DefaultSystemPrompt;
         _customSystemPrompt = false;
         _history.Clear();
-        return BridgeResponse.Success("Personalidade padrão da IA restaurada.");
+        return AiResult.Success("Personalidade padrão da IA restaurada.");
     }
 
-    private BridgeResponse Status()
+    public AiResult Status()
     {
         string personality = _customSystemPrompt ? "personalidade personalizada" : "personalidade padrão";
         return string.IsNullOrWhiteSpace(_apiKey)
-            ? BridgeResponse.Error($"IA sem chave; {personality}. Use ai-key para configurar.")
-            : BridgeResponse.Success($"IA ativa: {Model} via OpenRouter; {personality}.");
+            ? AiResult.Error($"IA sem chave; {personality}. Use ai-key para configurar.")
+            : AiResult.Success($"IA ativa: {Model} via OpenRouter; {personality}.");
     }
 
-    private async Task<BridgeResponse> ChatAsync(string? prompt, CancellationToken token)
+    public async Task<AiResult> ChatAsync(string? prompt, CancellationToken token)
     {
         if (string.IsNullOrWhiteSpace(prompt))
-            return BridgeResponse.Error("Escreva uma pergunta para a IA.");
+            return AiResult.Error("Escreva uma pergunta para a IA.");
         if (string.IsNullOrWhiteSpace(_apiKey))
-            return BridgeResponse.Error("IA sem chave. Use ai-key para configurar.");
+            return AiResult.Error("IA sem chave. Use ai-key para configurar.");
 
         var messages = new List<ChatMessage>
         {
@@ -168,7 +102,7 @@ internal sealed class AiBridgeServer : IDisposable
             using HttpResponseMessage response = await _http.SendAsync(request, token);
             string body = await response.Content.ReadAsStringAsync(token);
             if (!response.IsSuccessStatusCode)
-                return BridgeResponse.Error(ReadApiError(body, (int)response.StatusCode));
+                return AiResult.Error(ReadApiError(body, (int)response.StatusCode));
 
             using JsonDocument document = JsonDocument.Parse(body);
             string? answer = document.RootElement
@@ -177,26 +111,26 @@ internal sealed class AiBridgeServer : IDisposable
                 .GetProperty("content")
                 .GetString();
             if (string.IsNullOrWhiteSpace(answer))
-                return BridgeResponse.Error("A IA respondeu sem texto.");
+                return AiResult.Error("A IA respondeu sem texto.");
 
             _history.Add(new ChatMessage("user", prompt.Trim()));
             _history.Add(new ChatMessage("assistant", answer.Trim()));
             if (_history.Count > 16)
                 _history.RemoveRange(0, _history.Count - 16);
 
-            return BridgeResponse.Success($"IA: {answer.Trim()}");
+            return AiResult.Success($"IA: {answer.Trim()}");
         }
         catch (TaskCanceledException) when (!token.IsCancellationRequested)
         {
-            return BridgeResponse.Error("A OpenRouter demorou demais para responder.");
+            return AiResult.Error("A OpenRouter demorou demais para responder.");
         }
         catch (HttpRequestException ex)
         {
-            return BridgeResponse.Error($"Não foi possível acessar a OpenRouter: {ex.Message}");
+            return AiResult.Error($"Não foi possível acessar a OpenRouter: {ex.Message}");
         }
         catch (JsonException)
         {
-            return BridgeResponse.Error("A OpenRouter devolveu uma resposta inválida.");
+            return AiResult.Error("A OpenRouter devolveu uma resposta inválida.");
         }
     }
 
@@ -405,16 +339,13 @@ internal sealed class AiBridgeServer : IDisposable
         _systemPrompt = DefaultSystemPrompt;
         _customSystemPrompt = false;
         _history.Clear();
-        _cancel.Cancel();
         _http.Dispose();
-        _cancel.Dispose();
     }
 
-    private sealed record BridgeRequest(string? Type, string? Prompt);
-    private sealed record BridgeResponse(bool Ok, string Message)
+    public sealed record AiResult(bool Ok, string Message)
     {
-        public static BridgeResponse Success(string message) => new(true, message);
-        public static BridgeResponse Error(string message) => new(false, message);
+        public static AiResult Success(string message) => new(true, message);
+        public static AiResult Error(string message) => new(false, message);
     }
     private sealed record ChatMessage(string role, string content);
 }
