@@ -5,4 +5,5 @@ internal sealed record CommandExecutionResult(
     string Output = "",
     string Error = "",
     bool ClearRequested = false,
-    bool ExitRequested = false);
+    bool ExitRequested = false,
+    bool Streamed = false);

@@ -18,9 +18,24 @@ internal sealed class BuiltInCommandRegistry
         ["where"] = "where", ["which"] = "where",
         ["set"] = "set", ["env"] = "set",
         ["history"] = "history", ["help"] = "help", ["exit"] = "exit",
-        ["ai-key"] = "ai-key", ["ai-status"] = "ai-status", ["ai-prompt"] = "ai-prompt", ["ai"] = "ai"
+        ["ai-key"] = "ai-key", ["ai-status"] = "ai-status", ["ai-prompt"] = "ai-prompt", ["ai"] = "ai",
+        ["next"] = "next-io", ["next-io"] = "next-io", ["ia"] = "next-io",
+        ["alias"] = "alias", ["unalias"] = "unalias",
+        ["jobs"] = "jobs", ["fg"] = "fg", ["kill"] = "kill",
+        ["source"] = "source",
+        ["take"] = "take",
+        ["open"] = "open", ["start"] = "open", ["explorer"] = "open",
+        ["up"] = "up",
+        ["copyout"] = "copyout", ["clipout"] = "copyout",
+        ["retry"] = "retry",
+        ["find"] = "find", ["grep"] = "find",
+        ["head"] = "head", ["tail"] = "tail", ["wc"] = "wc",
+        ["sort"] = "sort", ["uniq"] = "uniq",
+        ["whoami"] = "whoami", ["hostname"] = "hostname",
+        ["date"] = "date", ["time"] = "time", ["sleep"] = "sleep"
     };
 
     public IEnumerable<string> Names => _aliases.Keys;
+    public IEnumerable<string> CanonicalNames => _aliases.Values.Distinct(StringComparer.OrdinalIgnoreCase);
     public bool TryResolve(string name, out string canonical) => _aliases.TryGetValue(name, out canonical!);
 }

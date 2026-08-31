@@ -16,6 +16,12 @@ public partial class MainWindow : Window
     private bool _renderQueued;
     private short _columns = 100;
     private short _rows = 30;
+    private bool _searchMode;
+    private string _searchQuery = string.Empty;
+    private string _originalInput = string.Empty;
+    private int _searchIndex = -1;
+    private int _tabIndex = -1;
+    private List<string> _tabCompletions = [];
 
     public MainWindow()
     {
@@ -114,7 +120,8 @@ public partial class MainWindow : Window
     {
         if (_shell is null || _shell.IsInteractive) return;
         int tail = _input.Text.Length - _input.Cursor;
-        _buffer.Feed("\r\x1b[2K" + _shell.Prompt + _input.Text + (tail > 0 ? $"\x1b[{tail}D" : string.Empty));
+        string prompt = _searchMode ? $"(reverse-i-search)'{_searchQuery}': " : _shell.Prompt;
+        _buffer.Feed("\r\x1b[2K" + prompt + _input.Text + (tail > 0 ? $"\x1b[{tail}D" : string.Empty));
         QueueRender();
     }
 
@@ -125,6 +132,8 @@ public partial class MainWindow : Window
         if (_shell?.IsInteractive == true) await _shell.WriteInteractiveAsync(e.Text);
         else if (_shell is { IsBusy: false })
         {
+            if (_searchMode) { HandleSearchInput(e.Text); return; }
+            _tabIndex = -1;
             _input.Insert(e.Text);
             RenderInputLine();
         }
@@ -137,7 +146,22 @@ public partial class MainWindow : Window
         bool ctrl = modifiers.HasFlag(ModifierKeys.Control);
         bool alt = modifiers.HasFlag(ModifierKeys.Alt);
         bool shift = modifiers.HasFlag(ModifierKeys.Shift);
-        if (ctrl && alt) return; // AltGr: o caractere real chega em PreviewTextInput.
+        if (ctrl && alt) return;
+
+        if (_searchMode)
+        {
+            if (e.Key == Key.Escape) { ExitSearchMode(); e.Handled = true; return; }
+            if (e.Key == Key.Enter) { ExitSearchMode(true); e.Handled = true; return; }
+            if (ctrl && e.Key == Key.R) { SearchNext(); e.Handled = true; return; }
+            if (e.Key == Key.Back)
+            {
+                if (_searchQuery.Length > 0) _searchQuery = _searchQuery[..^1];
+                SearchInHistory();
+                RenderInputLine();
+            }
+            e.Handled = true;
+            return;
+        }
 
         if (ctrl && shift && e.Key == Key.C)
         {
@@ -169,6 +193,24 @@ public partial class MainWindow : Window
             }
             return;
         }
+        if (ctrl && e.Key == Key.R)
+        {
+            e.Handled = true;
+            if (!_shell.IsInteractive && !_shell.IsBusy) EnterSearchMode();
+            return;
+        }
+        if (ctrl && e.Key == Key.Z)
+        {
+            e.Handled = true;
+            if (!_shell.IsInteractive && !_shell.IsBusy && _input.Undo()) RenderInputLine();
+            return;
+        }
+        if (ctrl && e.Key == Key.Y)
+        {
+            e.Handled = true;
+            if (!_shell.IsInteractive && !_shell.IsBusy && _input.Redo()) RenderInputLine();
+            return;
+        }
 
         if (e.Key == Key.Space)
         {
@@ -176,6 +218,7 @@ public partial class MainWindow : Window
             if (_shell.IsInteractive) await _shell.WriteInteractiveAsync(" ");
             else if (!_shell.IsBusy)
             {
+                _tabIndex = -1;
                 _input.Insert(" ");
                 RenderInputLine();
             }
@@ -200,30 +243,161 @@ public partial class MainWindow : Window
         }
         if (_shell.IsBusy) return;
 
-        bool changed = true;
-        switch (e.Key)
+        if (e.Key == Key.Tab)
         {
-            case Key.Enter:
-                e.Handled = true;
-                string command = _input.Take();
-                _buffer.Feed("\r\x1b[2K" + _shell.Prompt + command + "\r\n");
-                QueueRender();
-                await _shell.SubmitAsync(command, _columns, _rows);
-                return;
-            case Key.Back: _input.Backspace(); break;
-            case Key.Delete: _input.Delete(); break;
-            case Key.Left: _input.MoveLeft(); break;
-            case Key.Right: _input.MoveRight(); break;
-            case Key.Home: _input.MoveHome(); break;
-            case Key.End: _input.MoveEnd(); break;
-            case Key.Up: _input.Replace(_shell.History.Previous(_input.Text)); break;
-            case Key.Down: _input.Replace(_shell.History.Next()); break;
-            default: changed = false; break;
+            e.Handled = true;
+            HandleTabCompletion();
+            return;
+        }
+
+        bool changed = true;
+        if (ctrl)
+        {
+            switch (e.Key)
+            {
+                case Key.A: _input.MoveHome(); break;
+                case Key.E: _input.MoveEnd(); break;
+                case Key.U: _input.KillLineStart(); break;
+                case Key.K: _input.KillLineEnd(); break;
+                case Key.W: _input.DeleteWordBack(); break;
+                case Key.Left: _input.MoveWordLeft(); break;
+                case Key.Right: _input.MoveWordRight(); break;
+                default: changed = false; break;
+            }
+        }
+        else
+        {
+            switch (e.Key)
+            {
+                case Key.Enter:
+                    e.Handled = true;
+                    _tabIndex = -1;
+                    string command = _input.Take();
+                    _buffer.Feed("\r\x1b[2K" + _shell.Prompt + command + "\r\n");
+                    QueueRender();
+                    await _shell.SubmitAsync(command, _columns, _rows);
+                    return;
+                case Key.Back: _input.Backspace(); break;
+                case Key.Delete: _input.Delete(); break;
+                case Key.Left: _input.MoveLeft(); break;
+                case Key.Right: _input.MoveRight(); break;
+                case Key.Home: _input.MoveHome(); break;
+                case Key.End: _input.MoveEnd(); break;
+                case Key.Up: _input.Replace(_shell.History.Previous(_input.Text)); break;
+                case Key.Down: _input.Replace(_shell.History.Next()); break;
+                default: changed = false; break;
+            }
         }
         if (changed)
         {
             e.Handled = true;
+            _tabIndex = -1;
             RenderInputLine();
+        }
+    }
+
+    private void HandleTabCompletion()
+    {
+        if (_shell is null) return;
+        string input = _input.Text;
+        int cursor = _input.Cursor;
+        (string token, int start, bool isCommand) = TokenAtCursor(input, cursor);
+
+        List<string> candidates = _tabIndex >= 0 && _tabCompletions.Count > 0
+            ? _tabCompletions
+            : _shell.GetCompletions(token.Trim('"'), isCommand);
+        if (candidates.Count == 0) return;
+
+        _tabCompletions = candidates;
+        _tabIndex = (_tabIndex + 1) % candidates.Count;
+        string completion = _tabCompletions[_tabIndex];
+        if (completion.Contains(' ') && !completion.StartsWith('"'))
+        {
+            bool dir = completion.EndsWith('\\');
+            completion = "\"" + completion.TrimEnd('\\') + "\"" + (dir ? "\\" : "");
+        }
+
+        string newText = input[..start] + completion + input[cursor..];
+        _input.Replace(newText);
+        _input.Cursor = start + completion.Length;
+        RenderInputLine();
+    }
+
+    private static (string Token, int Start, bool IsCommand) TokenAtCursor(string input, int cursor)
+    {
+        int start = 0;
+        bool inQuotes = false;
+        bool seenWord = false;
+        int tokenStart = 0;
+        for (int i = 0; i < cursor; i++)
+        {
+            char ch = input[i];
+            if (ch == '"')
+            {
+                inQuotes = !inQuotes;
+                if (inQuotes && (i == 0 || char.IsWhiteSpace(input[i - 1]))) tokenStart = i;
+                continue;
+            }
+            if (!inQuotes && char.IsWhiteSpace(ch))
+            {
+                seenWord = true;
+                start = i + 1;
+                tokenStart = i + 1;
+            }
+        }
+        return (input[tokenStart..cursor], tokenStart, !seenWord);
+    }
+
+    private void EnterSearchMode()
+    {
+        _searchMode = true;
+        _searchQuery = string.Empty;
+        _originalInput = _input.Text;
+        _searchIndex = -1;
+        RenderInputLine();
+    }
+
+    private void ExitSearchMode(bool accept = false)
+    {
+        _searchMode = false;
+        if (!accept) _input.Replace(_originalInput);
+        RenderInputLine();
+    }
+
+    private void HandleSearchInput(string text)
+    {
+        _searchQuery += text;
+        SearchInHistory();
+        RenderInputLine();
+    }
+
+    private void SearchNext()
+    {
+        SearchInHistory();
+        RenderInputLine();
+    }
+
+    private void SearchInHistory()
+    {
+        if (_shell is null || string.IsNullOrEmpty(_searchQuery)) return;
+        var entries = _shell.History.Entries;
+        for (int i = _searchIndex - 1; i >= 0; i--)
+        {
+            if (entries[i].Contains(_searchQuery, StringComparison.OrdinalIgnoreCase))
+            {
+                _searchIndex = i;
+                _input.Replace(entries[i]);
+                return;
+            }
+        }
+        for (int i = entries.Count - 1; i >= 0; i--)
+        {
+            if (entries[i].Contains(_searchQuery, StringComparison.OrdinalIgnoreCase))
+            {
+                _searchIndex = i;
+                _input.Replace(entries[i]);
+                return;
+            }
         }
     }
 
@@ -265,13 +439,83 @@ public partial class MainWindow : Window
     private async void TerminalView_PreviewMouseRightButtonDown(object sender, MouseButtonEventArgs e)
     {
         e.Handled = true;
-        if (!string.IsNullOrEmpty(TerminalView.Selection.Text)) Clipboard.SetText(TerminalView.Selection.Text);
+        string? selection = null;
+        try { selection = TerminalView.Selection?.Text; } catch { }
+        if (!string.IsNullOrEmpty(selection)) Clipboard.SetText(selection);
         else if (Clipboard.ContainsText()) await PasteAsync(Clipboard.GetText());
         TerminalView.Focus();
     }
 
     private void TerminalView_ContextMenuOpening(object sender, ContextMenuEventArgs e) => e.Handled = true;
     private void TerminalView_PreviewMouseRightButtonUp(object sender, MouseButtonEventArgs e) => e.Handled = true;
+
+    private async void TerminalView_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (_shell?.IsInteractive == true && _buffer.IsMouseTracking)
+        {
+            e.Handled = true;
+            var pos = e.GetPosition(TerminalView);
+            int col = (int)(pos.X / (TerminalView.FontSize * 0.61)) + 1;
+            int row = (int)(pos.Y / (TerminalView.FontSize * 1.35)) + 1;
+            col = Math.Clamp(col, 1, _columns);
+            row = Math.Clamp(row, 1, _rows);
+            string seq = _buffer.IsSgrMouseMode
+                ? $"\x1b[<0;{col};{row}M"
+                : $"\x1b[M{(char)0}{(char)(32 + col)}{(char)(32 + row)}";
+            await _shell.WriteInteractiveAsync(seq);
+        }
+    }
+
+    private async void TerminalView_PreviewMouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+    {
+        if (_shell?.IsInteractive == true && _buffer.IsMouseTracking)
+        {
+            e.Handled = true;
+            var pos = e.GetPosition(TerminalView);
+            int col = (int)(pos.X / (TerminalView.FontSize * 0.61)) + 1;
+            int row = (int)(pos.Y / (TerminalView.FontSize * 1.35)) + 1;
+            col = Math.Clamp(col, 1, _columns);
+            row = Math.Clamp(row, 1, _rows);
+            string seq = _buffer.IsSgrMouseMode
+                ? $"\x1b[<0;{col};{row}m"
+                : $"\x1b[M{(char)3}{(char)(32 + col)}{(char)(32 + row)}";
+            await _shell.WriteInteractiveAsync(seq);
+        }
+    }
+
+    private async void TerminalView_PreviewMouseMove(object sender, MouseEventArgs e)
+    {
+        if (_shell?.IsInteractive == true && _buffer.IsMouseTracking && e.LeftButton == MouseButtonState.Pressed)
+        {
+            var pos = e.GetPosition(TerminalView);
+            int col = (int)(pos.X / (TerminalView.FontSize * 0.61)) + 1;
+            int row = (int)(pos.Y / (TerminalView.FontSize * 1.35)) + 1;
+            col = Math.Clamp(col, 1, _columns);
+            row = Math.Clamp(row, 1, _rows);
+            string seq = _buffer.IsSgrMouseMode
+                ? $"\x1b[<32;{col};{row}M"
+                : $"\x1b[M{(char)32}{(char)(32 + col)}{(char)(32 + row)}";
+            await _shell.WriteInteractiveAsync(seq);
+        }
+    }
+
+    private async void TerminalView_PreviewMouseWheel(object sender, MouseWheelEventArgs e)
+    {
+        if (_shell?.IsInteractive == true && _buffer.IsMouseTracking)
+        {
+            e.Handled = true;
+            var pos = e.GetPosition(TerminalView);
+            int col = (int)(pos.X / (TerminalView.FontSize * 0.61)) + 1;
+            int row = (int)(pos.Y / (TerminalView.FontSize * 1.35)) + 1;
+            col = Math.Clamp(col, 1, _columns);
+            row = Math.Clamp(row, 1, _rows);
+            int button = e.Delta > 0 ? 64 : 65;
+            string seq = _buffer.IsSgrMouseMode
+                ? $"\x1b[<{button};{col};{row}M"
+                : $"\x1b[M{(char)button}{(char)(32 + col)}{(char)(32 + row)}";
+            await _shell.WriteInteractiveAsync(seq);
+        }
+    }
 
     private void TerminalView_SizeChanged(object sender, SizeChangedEventArgs e)
     {
@@ -307,17 +551,7 @@ public partial class MainWindow : Window
         if (!string.IsNullOrEmpty(TerminalView.Selection.Text)) Clipboard.SetText(TerminalView.Selection.Text);
     }
 
-    private static SolidColorBrush TerminalBrush(TerminalColor color) => color switch
-    {
-        TerminalColor.Black => Brush("#0C0C0C"), TerminalColor.Red => Brush("#C50F1F"),
-        TerminalColor.Green => Brush("#13A10E"), TerminalColor.Yellow => Brush("#FACC15"),
-        TerminalColor.Blue => Brush("#3B82F6"), TerminalColor.Magenta => Brush("#C586C0"),
-        TerminalColor.Cyan => Brush("#22D3EE"), TerminalColor.White => Brush("#F8FAFC"),
-        TerminalColor.BrightBlack => Brush("#767676"), TerminalColor.BrightRed => Brush("#F14C4C"),
-        TerminalColor.BrightGreen => Brush("#23D18B"), TerminalColor.BrightYellow => Brush("#FDE047"),
-        TerminalColor.BrightBlue => Brush("#3B8EEA"), TerminalColor.BrightMagenta => Brush("#D670D6"),
-        TerminalColor.BrightCyan => Brush("#29B8DB"), TerminalColor.BrightWhite => Brush("#FFFFFF"),
-        _ => Brush("#22D3EE")
-    };
+    private static SolidColorBrush TerminalBrush(TerminalColor color) =>
+        new(Color.FromRgb(color.R, color.G, color.B));
     private static SolidColorBrush Brush(string hex) => (SolidColorBrush)new BrushConverter().ConvertFrom(hex)!;
 }

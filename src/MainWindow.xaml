@@ -72,17 +72,24 @@
     <Border x:Name="WindowSurface" BorderBrush="#758BAA"
             BorderThickness="1" CornerRadius="28">
         <Border.Background>
-            <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
-                <GradientStop Color="#B512243B" Offset="0" />
-                <GradientStop Color="#A90A1728" Offset="0.48" />
-                <GradientStop Color="#BC050B15" Offset="1" />
-            </LinearGradientBrush>
+            <ImageBrush ImageSource="/TerminalCustom;component/Assets/terminal-background.png"
+                        Stretch="UniformToFill" Opacity="1" />
         </Border.Background>
         <Grid ClipToBounds="True">
             <Grid.RowDefinitions>
                 <RowDefinition Height="44" />
                 <RowDefinition Height="*" />
             </Grid.RowDefinitions>
+
+            <Border Grid.RowSpan="2" CornerRadius="27" IsHitTestVisible="False">
+                <Border.Background>
+                    <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
+                        <GradientStop Color="#7A02050A" Offset="0" />
+                        <GradientStop Color="#9200060C" Offset="0.55" />
+                        <GradientStop Color="#A804080D" Offset="1" />
+                    </LinearGradientBrush>
+                </Border.Background>
+            </Border>
 
             <Grid Grid.Row="0" Background="Transparent" MouseLeftButtonDown="TitleBar_MouseLeftButtonDown">
                 <Grid.ColumnDefinitions>
@@ -118,8 +125,8 @@
 
             <RichTextBox x:Name="TerminalView" Grid.Row="1" Margin="30,0,22,22"
                          IsReadOnly="False" AcceptsReturn="True" AcceptsTab="True"
-                         Background="Transparent" BorderThickness="0" Foreground="#22D3EE"
-                         CaretBrush="Transparent" FontFamily="Cascadia Mono, Consolas" FontSize="15"
+                         Background="Transparent" BorderThickness="0" Foreground="#F6FFFA"
+                         CaretBrush="Transparent" FontFamily="Cascadia Mono, Segoe UI Emoji, Consolas" FontSize="15"
                          Padding="0" IsUndoEnabled="False" SpellCheck.IsEnabled="False"
                          ContextMenuService.IsEnabled="False"
                          VerticalScrollBarVisibility="Hidden" HorizontalScrollBarVisibility="Hidden"
@@ -128,8 +135,15 @@
                          PreviewKeyDown="TerminalView_PreviewKeyDown"
                          PreviewMouseRightButtonDown="TerminalView_PreviewMouseRightButtonDown"
                          PreviewMouseRightButtonUp="TerminalView_PreviewMouseRightButtonUp"
+                         PreviewMouseLeftButtonDown="TerminalView_PreviewMouseLeftButtonDown"
+                         PreviewMouseLeftButtonUp="TerminalView_PreviewMouseLeftButtonUp"
+                         PreviewMouseMove="TerminalView_PreviewMouseMove"
+                         PreviewMouseWheel="TerminalView_PreviewMouseWheel"
                          ContextMenuOpening="TerminalView_ContextMenuOpening"
                          SizeChanged="TerminalView_SizeChanged">
+                <RichTextBox.Effect>
+                    <DropShadowEffect Color="#E6FFF2" BlurRadius="4" ShadowDepth="0" Opacity="0.48" />
+                </RichTextBox.Effect>
                 <FlowDocument PagePadding="0" PageWidth="10000">
                     <Paragraph Margin="0" />
                 </FlowDocument>

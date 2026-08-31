@@ -8,7 +8,7 @@ internal sealed class PathResolver(ShellContext context)
 {
     public ResolvedExecutable? Resolve(string command)
     {
-        command = context.Environment.Expand(command);
+        command = context.ExpandTilde(context.Environment.Expand(command));
         IEnumerable<string> directories;
         string fileName;
 

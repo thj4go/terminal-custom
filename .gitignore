@@ -6,3 +6,7 @@ app/
 *.user
 *.suo
 *.pdb
+archive/
+**/__pycache__/
+*.py[cod]
+next-cli/config.json

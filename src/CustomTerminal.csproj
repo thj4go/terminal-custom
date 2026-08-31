@@ -11,5 +11,6 @@
   </PropertyGroup>
   <ItemGroup>
     <Resource Include="Assets\terminal.ico" />
+    <Resource Include="Assets\terminal-background.png" />
   </ItemGroup>
 </Project>

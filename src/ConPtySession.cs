@@ -3,6 +3,7 @@ using System.ComponentModel;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Threading;
 
 namespace TerminalCustom;
 
@@ -20,10 +21,10 @@ internal sealed class ConPtySession : IDisposable
     private CancellationTokenSource? _cancel;
     private Task? _readTask;
     private readonly SemaphoreSlim _writeLock = new(1, 1);
-    private bool _disposed;
+    private int _disposed;
 
     public event Action<string>? OutputReceived;
-    public event Action? Exited;
+    public event Action<int>? Exited;
 
     public void Start(string commandLine, string workingDirectory, short columns, short rows)
     {
@@ -84,12 +85,12 @@ internal sealed class ConPtySession : IDisposable
 
     public async Task WriteAsync(string text)
     {
-        if (_input is null || _disposed) return;
+        if (_input is null || Volatile.Read(ref _disposed) != 0) return;
         byte[] bytes = Encoding.UTF8.GetBytes(text);
         await _writeLock.WaitAsync();
         try
         {
-            if (_input is null || _disposed) return;
+            if (_input is null || Volatile.Read(ref _disposed) != 0) return;
             await _input.WriteAsync(bytes);
             await _input.FlushAsync();
         }
@@ -129,15 +130,19 @@ internal sealed class ConPtySession : IDisposable
     {
         if (_processHandle == IntPtr.Zero) return;
         await Task.Run(() => WaitForSingleObject(_processHandle, 0xFFFFFFFF));
+        _cancel?.Cancel();
+        if (_pseudoConsole != IntPtr.Zero) { ClosePseudoConsole(_pseudoConsole); _pseudoConsole = IntPtr.Zero; }
         if (_readTask is not null)
             try { await _readTask; } catch { }
-        Exited?.Invoke();
+        int exitCode = GetExitCodeProcess(_processHandle, out uint nativeExitCode)
+            ? unchecked((int)nativeExitCode)
+            : 1;
+        Exited?.Invoke(exitCode);
     }
 
     public void Dispose()
     {
-        if (_disposed) return;
-        _disposed = true;
+        if (Interlocked.CompareExchange(ref _disposed, 1, 0) != 0) return;
         _cancel?.Cancel();
         _input?.Dispose();
         _output?.Dispose();
@@ -167,4 +172,5 @@ internal sealed class ConPtySession : IDisposable
     [DllImport("kernel32.dll")] private static extern void DeleteProcThreadAttributeList(IntPtr list);
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] private static extern bool CreateProcess(string? applicationName, StringBuilder commandLine, IntPtr processAttributes, IntPtr threadAttributes, bool inheritHandles, uint creationFlags, IntPtr environment, string currentDirectory, ref StartupInfoEx startupInfo, out ProcessInformation processInformation);
     [DllImport("kernel32.dll")] private static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
+    [DllImport("kernel32.dll", SetLastError = true)] private static extern bool GetExitCodeProcess(IntPtr process, out uint exitCode);
 }

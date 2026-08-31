@@ -1,0 +1,13 @@
+# Script executado pelo próprio Terminal Custom
+echo Olá, $1
+echo Argumentos recebidos: $@
+
+repeat 3
+  echo Repetição %ITERATION%
+end
+
+if where git
+  echo Git está disponível
+else
+  echo Git não foi encontrado
+end

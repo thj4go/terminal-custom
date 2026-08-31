@@ -22,12 +22,13 @@ WPF
 - Cores ANSI, Unicode, cursor e redimensionamento preservados pelo `TerminalBuffer`.
 - Programas interativos como `python`, `pwsh`, `powershell`, `cmd` e `ssh` via ConPTY.
 - Pipes (`|`) e redirecionamentos (`>`, `>>`, `<`) sem PowerShell.
-- Variáveis `%NOME%`, `PATH` e `PATHEXT` herdadas pelos processos filhos.
+- Variáveis `%NOME%`, `$env:NOME`, `${env:NOME}`, `PATH` e `PATHEXT` herdadas pelos processos filhos.
 - Histórico em memória com `↑`, `↓` e `history`; entradas sensíveis não são guardadas.
 - Copiar com `Ctrl+Shift+C`; colar com `Ctrl+Shift+V` ou botão direito sem seleção.
 - `Ctrl+L` limpa apenas a tela. `Ctrl+C` cancela a linha ou é enviado ao processo ativo.
 - Suporte a AltGr em teclado ABNT2.
 - IA opcional via OpenRouter usando `deepseek/deepseek-v4-pro`.
+- Linguagem de automação própria `.tsh`, executada sem PowerShell ou CMD.
 
 ## Comandos internos
 
@@ -35,6 +36,8 @@ WPF
 cd  pwd  dir/ls  cls/clear  echo  mkdir/md  rmdir/rd  del/rm
 copy/cp  move/mv  type/cat  touch  where/which  set/env
 history  help  exit
+find/grep  head  tail  wc  sort  uniq  sleep
+whoami  hostname  date  time
 ```
 
 Exemplos:
@@ -49,11 +52,21 @@ set TESTE=123
 echo %TESTE%
 python
 powershell
+& "$env:LOCALAPPDATA\Programs\Ollama\ollama.exe" run livre-br --think=false
 ```
 
 Arquivos `.exe` e `.com` são iniciados diretamente. Somente scripts `.cmd` e `.bat` usam `cmd.exe /d /s /c`, pois esse é o interpretador exigido por esses formatos.
 
 ## IA
+
+O motor completo do NEXT-IO fica incorporado em `next-cli/`. Depois de usar
+`ai-key`, digite `ai`, `ia`, `next` ou uma frase normal para abrir a sessão de
+IA dentro do próprio terminal. Tools, comandos, alterações e resultados são
+renderizados em tempo real pela mesma tela. Digite `sair` para voltar ao shell.
+
+O diretório atual do terminal vira automaticamente o workspace da sessão. O
+modo de permissões `guarded` do NEXT-IO continua ativo. O prompt definido com
+`ai-prompt` também é entregue à sessão integrada.
 
 | Comando | Função |
 | --- | --- |
@@ -65,6 +78,36 @@ Arquivos `.exe` e `.com` são iniciados diretamente. Somente scripts `.cmd` e `.
 | `ai <pergunta>` | Envia uma pergunta explícita à IA. |
 
 Frases reconhecidas como linguagem natural também podem ir para a IA. Erros comuns, como `gitt status`, continuam sendo erros de comando e podem receber sugestão. Textos com padrões de chaves, tokens, senhas, cookies, `.env` ou chaves privadas não são enviados automaticamente. A chave da OpenRouter nunca é gravada em arquivo ou histórico.
+
+## Scripts nativos `.tsh`
+
+Arquivos `.tsh` são interpretados pelo próprio Terminal Custom. Eles podem ser executados diretamente pelo nome ou com `source`.
+
+```text
+# exemplo.tsh
+echo Olá, $1
+
+repeat 3
+  echo Repetição %ITERATION%
+end
+
+if where git
+  echo Git está disponível
+else
+  echo Git não foi encontrado
+end
+```
+
+Execução:
+
+```text
+exemplo.tsh usuário
+source exemplo.tsh usuário
+```
+
+Variáveis disponíveis: `$1`, `$2`..., `$@`, `%ITERATION%`, `$?` e `$_`.
+
+Essa linguagem cobre automações pessoais sem iniciar PowerShell ou CMD. Formatos externos como `.ps1`, `.py` e `.js` continuam pertencendo aos seus respectivos interpretadores e são tratados como clientes opcionais de compatibilidade.
 
 ## Executar
 
